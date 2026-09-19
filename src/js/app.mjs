@@ -1,4 +1,4 @@
-import { store, uid, parseYuanToCents, today, DEFAULT_CATEGORIES } from './store.mjs';
+import { store, uid, parseYuanToCents, today, DEFAULT_CATEGORIES, filterMembers, searchMembers } from './store.mjs';
 import { settle, formatCents } from './calc.mjs';
 
 const $ = (sel) => document.querySelector(sel);
@@ -21,6 +21,170 @@ function statusBadge(status) {
   return `<span class="badge badge-${STATUS_CLASS[status] || 'info'}">${esc(status)}</span>`;
 }
 
+function meTag(id) {
+  return store.isMe(id) ? '<em class="tag">我</em>' : '';
+}
+
+/* ---------- 成员搜索式输入框 ---------- */
+
+const pickers = new Map();
+
+function pickerHtml(id, placeholder) {
+  return `
+    <div class="picker" data-picker="${id}">
+      <div class="picker-chips" data-picker-chips="${id}"></div>
+      <div class="picker-box">
+        <input type="text" class="picker-input" data-picker-input="${id}" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false" />
+        <div class="picker-menu" data-picker-menu="${id}" hidden></div>
+      </div>
+    </div>`;
+}
+
+function mountPicker(id, selected, onChange) {
+  pickers.set(id, { selected, query: '', highlight: -1, open: false, onChange });
+  queueMicrotask(() => refreshPicker(id));
+}
+
+function pickerState(id) {
+  if (!pickers.has(id)) pickers.set(id, { selected: [], query: '', highlight: -1, open: false });
+  return pickers.get(id);
+}
+
+function refreshPicker(id) {
+  const root = document.querySelector(`[data-picker="${id}"]`);
+  const state = pickerState(id);
+  if (!root) return;
+  const chips = root.querySelector('[data-picker-chips]');
+  chips.innerHTML = state.selected.length
+    ? state.selected
+        .map(
+          (mid) =>
+            `<span class="chip chip-picked">${esc(store.memberName(mid))}${meTag(mid)}<button type="button" class="chip-x" data-unpick="${id}" data-id="${mid}" aria-label="移除">×</button></span>`,
+        )
+        .join('')
+    : '<span class="hint">还没选到人</span>';
+  paintPickerMenu(id);
+}
+
+function paintPickerMenu(id) {
+  const root = document.querySelector(`[data-picker="${id}"]`);
+  const state = pickerState(id);
+  if (!root) return;
+  const menu = root.querySelector('[data-picker-menu]');
+  const hits = filterMembers(store.data.members, state.query, state.selected);
+  const typed = state.query.trim();
+  const exact = store.data.members.some((m) => m.name === typed);
+  const items = hits.map(
+    (m, i) =>
+      `<button type="button" class="picker-item ${i === state.highlight ? 'is-hl' : ''}" data-pick="${id}" data-id="${m.id}">${esc(m.name)}${meTag(m.id)}</button>`,
+  );
+  const create =
+    typed && !exact
+      ? `<button type="button" class="picker-item picker-new ${hits.length === 0 && state.highlight === 0 ? 'is-hl' : ''}" data-create="${id}" data-name="${esc(typed)}">+ 新建「${esc(typed)}」</button>`
+      : '';
+  const empty = !items.length && !create ? '<p class="picker-empty">没有匹配的成员</p>' : '';
+  menu.innerHTML = items.join('') + create + empty;
+  menu.hidden = !state.open;
+}
+
+function pickMember(id, memberId) {
+  const state = pickerState(id);
+  if (!state.selected.includes(memberId)) state.selected.push(memberId);
+  state.query = '';
+  state.highlight = -1;
+  const input = document.querySelector(`[data-picker-input="${id}"]`);
+  if (input) input.value = '';
+  refreshPicker(id);
+  if (input) input.focus();
+  state.onChange?.();
+}
+
+function createAndPick(id, name) {
+  const member = store.findOrCreateMember(name);
+  store.persist();
+  pickMember(id, member.id);
+}
+
+function unpickMember(id, memberId) {
+  const state = pickerState(id);
+  state.selected = state.selected.filter((m) => m !== memberId);
+  refreshPicker(id);
+  state.onChange?.();
+}
+
+function closePickerMenus(exceptId) {
+  document.querySelectorAll('[data-picker-menu]').forEach((menu) => {
+    const id = menu.dataset.pickerMenu;
+    if (id === exceptId) return;
+    menu.hidden = true;
+    pickerState(id).open = false;
+  });
+}
+
+document.addEventListener('focusin', (event) => {
+  const input = event.target.closest('[data-picker-input]');
+  if (!input) return;
+  const id = input.dataset.pickerInput;
+  const state = pickerState(id);
+  state.query = input.value;
+  state.highlight = -1;
+  state.open = true;
+  closePickerMenus(id);
+  paintPickerMenu(id);
+});
+
+document.addEventListener('input', (event) => {
+  const input = event.target.closest('[data-picker-input]');
+  if (!input) return;
+  const id = input.dataset.pickerInput;
+  const state = pickerState(id);
+  state.query = input.value;
+  state.highlight = -1;
+  state.open = true;
+  paintPickerMenu(id);
+});
+
+document.addEventListener('keydown', (event) => {
+  const input = event.target.closest('[data-picker-input]');
+  if (!input) return;
+  const id = input.dataset.pickerInput;
+  const state = pickerState(id);
+  const hits = filterMembers(store.data.members, state.query, state.selected);
+  const optionCount = hits.length + (state.query.trim() && !store.data.members.some((m) => m.name === state.query.trim()) ? 1 : 0);
+
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    if (!optionCount) return;
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    state.highlight = (state.highlight + step + optionCount * 2) % optionCount;
+    paintPickerMenu(id);
+    return;
+  }
+  if (event.key === 'Escape') {
+    state.open = false;
+    closePickerMenus();
+    return;
+  }
+  if (event.key === 'Backspace' && !input.value && state.selected.length) {
+    event.preventDefault();
+    unpickMember(id, state.selected[state.selected.length - 1]);
+    return;
+  }
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    const typed = state.query.trim();
+    if (state.highlight >= 0 && hits[state.highlight]) {
+      pickMember(id, hits[state.highlight].id);
+    } else if (typed) {
+      const existing = store.data.members.find((m) => m.name === typed);
+      if (existing) pickMember(id, existing.id);
+      else createAndPick(id, typed);
+    }
+  }
+});
+
+/* ---------- 渲染 ---------- */
+
 function render() {
   renderLedgerList();
   renderHeader();
@@ -29,9 +193,8 @@ function render() {
 }
 
 function renderLedgerList() {
-  const list = $('#ledger-list');
   const { ledgers, ui } = store.data;
-  list.innerHTML = ledgers.length
+  $('#ledger-list').innerHTML = ledgers.length
     ? ledgers
         .map(
           (l) => `
@@ -47,8 +210,9 @@ function renderLedgerList() {
 function renderHeader() {
   const header = $('#ledger-header');
   const ledger = store.activeLedger();
+  const me = store.me();
   if (!ledger) {
-    header.innerHTML = '<h1 class="page-title">AA 账本</h1><p class="hint">按用户组分账，记录谁掏了钱，自动算人均与谁欠谁人情。</p>';
+    header.innerHTML = `<h1 class="page-title">AA 账本</h1><p class="hint">${me ? `${esc(me.name)}，按用户组分账，记谁掏了钱，自动算人均与谁欠谁人情。` : '先设置你的名字。'}</p>`;
     return;
   }
   const result = settle(ledger, store.memberNamesById());
@@ -56,7 +220,7 @@ function renderHeader() {
     <div class="header-row">
       <div>
         <h1 class="page-title">${esc(ledger.name)}</h1>
-        <p class="hint">${ledger.memberIds.map((id) => esc(store.memberName(id))).join('、') || '尚未选择成员'}</p>
+        <p class="hint">${ledger.memberIds.length ? ledger.memberIds.map((id) => `${esc(store.memberName(id))}${meTag(id)}`).join('、') : '尚未选择成员'}</p>
       </div>
       <div class="header-stats">
         <div class="stat"><span>总花销</span><strong>${money(result.totalCents)}</strong></div>
@@ -66,27 +230,42 @@ function renderHeader() {
     </div>`;
 }
 
+const TABS = [
+  ['flow', '流水'],
+  ['settle', '结算'],
+  ['members', '成员'],
+  ['settings', '设置'],
+];
+
 function renderTabs() {
-  const active = store.data.ui.tab;
-  $('#tabs')
-    .querySelectorAll('.tab')
-    .forEach((el) => el.classList.toggle('is-active', el.dataset.tab === active));
+  const bar = $('#tabs');
+  bar.innerHTML = TABS.map(
+    ([key, label]) => `<button class="tab ${store.data.ui.tab === key ? 'is-active' : ''}" data-action="tab" data-tab="${key}">${label}</button>`,
+  ).join('');
 }
 
 function renderView() {
   const view = $('#view');
   const ledger = store.activeLedger();
+  const tab = store.data.ui.tab;
+  if (tab === 'settings') {
+    view.innerHTML = settingsView();
+    return;
+  }
   if (!ledger) {
     view.innerHTML = '<div class="empty">先在左侧新建一个账本。</div>';
     return;
   }
-  if (ledger.memberIds.length === 0 && store.data.ui.tab !== 'members') {
-    view.innerHTML = '<div class="empty">这个账本还没有成员。到「成员与分类」里选人，才能算人均。</div>';
+  if (ledger.memberIds.length === 0 && tab !== 'members') {
+    view.innerHTML = '<div class="empty">这个账本还没有成员。到「成员」里选人，才能算人均。</div>';
     return;
   }
-  if (store.data.ui.tab === 'flow') view.innerHTML = flowView(ledger);
-  else if (store.data.ui.tab === 'settle') view.innerHTML = settleView(ledger);
-  else view.innerHTML = membersView(ledger);
+  if (tab === 'flow') view.innerHTML = flowView(ledger);
+  else if (tab === 'settle') view.innerHTML = settleView(ledger);
+  else {
+    view.innerHTML = membersView(ledger);
+    mountPicker('ledger-members', [...ledger.memberIds], syncLedgerMembers);
+  }
 }
 
 function entryRow(ledger, entry) {
@@ -100,7 +279,7 @@ function entryRow(ledger, entry) {
         <span class="muted">${esc(entry.note || '')}</span>
       </div>
       <div class="cell cell-payer">
-        <span class="payer">付：${esc(store.memberName(entry.payerId))}</span>
+        <span class="payer">付：${esc(store.memberName(entry.payerId))}${meTag(entry.payerId)}</span>
         <span class="hint">人均 ${money(per)}</span>
       </div>
       <div class="cell cell-act">
@@ -112,7 +291,7 @@ function entryRow(ledger, entry) {
 
 function flowView(ledger) {
   const payerOptions = ledger.memberIds
-    .map((id) => `<option value="${id}">${esc(store.memberName(id))}</option>`)
+    .map((id) => `<option value="${id}">${esc(store.memberName(id))}${store.isMe(id) ? '（我）' : ''}</option>`)
     .join('');
   const catOptions = store.data.categories.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
   const entries = [...ledger.entries].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.createdAt - a.createdAt));
@@ -143,7 +322,7 @@ function settleView(ledger) {
     .map(
       (m) => `
       <tr>
-        <td>${esc(m.name)}</td>
+        <td>${esc(m.name)}${store.isMe(m.id) ? '<em class="tag">我</em>' : ''}</td>
         <td class="num">${money(m.paidCents)}</td>
         <td class="num">${money(m.shareCents)}</td>
         <td class="num ${m.balanceCents > 0 ? 'pos' : m.balanceCents < 0 ? 'neg' : ''}">
@@ -188,7 +367,7 @@ function settleView(ledger) {
     </div>
     ${
       next
-        ? `<div class="notice">下一次建议由 <strong>${esc(next.name)}</strong> 掏钱${next.owedTurns > 0 ? `（还缺 ${next.owedTurns} 次）` : '（掏钱次数最少）'}。</div>`
+        ? `<div class="notice">下一次建议由 <strong>${esc(next.name)}</strong> 掏钱${store.isMe(next.id) ? '（就是你）' : ''}${next.owedTurns > 0 ? `，还缺 ${next.owedTurns} 次` : '，掏钱次数最少'}。</div>`
         : ''
     }
     <div class="card">
@@ -213,70 +392,114 @@ function settleView(ledger) {
     }`;
 }
 
+let memberQuery = '';
+
+function memberChip(m, ledger) {
+  const inLedger = ledger.memberIds.includes(m.id);
+  return `
+    <button type="button" class="chip chip-member ${inLedger ? 'is-on' : ''}" data-action="toggle-member" data-id="${m.id}" title="点击${inLedger ? '移出' : '加入'}本账本">
+      ${esc(m.name)}${meTag(m.id)}<em class="hint">${inLedger ? '本账本' : '未加入'}</em>
+    </button>`;
+}
+
+function memberChipList(ledger) {
+  const hits = searchMembers(store.data.members, memberQuery);
+  if (!store.data.members.length) return '<p class="hint">还没有成员，用上面的输入框添加。</p>';
+  if (!hits.length) return `<p class="hint">没有名字包含「${esc(memberQuery)}」的成员。</p>`;
+  return hits.map((m) => memberChip(m, ledger)).join('');
+}
+
 function membersView(ledger) {
-  const pool = store.data.members;
-  const usage = (id) => store.data.ledgers.filter((l) => l.memberIds.includes(id)).length;
-  const chips = pool.length
-    ? pool
-        .map((m) => {
-          const inLedger = ledger.memberIds.includes(m.id);
-          return `
-        <span class="chip chip-member ${inLedger ? 'is-on' : ''}" data-action="toggle-member" data-id="${m.id}" title="点击${inLedger ? '移出' : '加入'}本账本">
-          ${esc(m.name)}<em class="hint">${usage(m.id)} 个账本</em>
-        </span>`;
-        })
-        .join('')
-    : '<p class="hint">还没有成员，下面添加第一个。</p>';
-
-  const catChips = store.data.categories
-    .map((c) => `<span class="chip chip-cat">${esc(c)}<button class="link danger" data-action="remove-category" data-name="${esc(c)}">×</button></span>`)
-    .join('');
-
   return `
     <div class="card">
-      <h2>本账本成员（${ledger.memberIds.length} 人）</h2>
-      <p class="hint">人均按这里的人数算。成员在所有账本之间共用，加过一次以后直接点选即可。</p>
-      <div class="chip-row">${chips}</div>
-      <form class="inline-form" data-form="add-member"><input type="text" name="name" placeholder="新成员名字" required /><button class="btn btn-primary">添加并加入本账本</button></form>
+      <h2 data-member-count>本账本成员（${ledger.memberIds.length} 人）</h2>
+      <p class="hint">人均按这里的人数算。输入名字可搜索已有成员，点一下或回车就加入；没有的会新建并存进成员池。</p>
+      ${pickerHtml('ledger-members', '搜索或添加成员…')}
+    </div>
+    <div class="card">
+      <h2>成员池（${store.data.members.length} 人）</h2>
+      <input type="search" class="search" data-action="member-search" placeholder="按名字过滤…" value="${esc(memberQuery)}" />
+      <div class="chip-row" id="member-list">${memberChipList(ledger)}</div>
     </div>
     <div class="card">
       <h2>分类标签</h2>
-      <div class="chip-row">${catChips}</div>
+      <div class="chip-row">${store.data.categories
+        .map((c) => `<span class="chip chip-cat">${esc(c)}<button class="link danger" data-action="remove-category" data-name="${esc(c)}">×</button></span>`)
+        .join('')}</div>
       <form class="inline-form" data-form="add-category"><input type="text" name="name" placeholder="新分类" required /><button class="btn btn-primary">添加</button></form>
+    </div>`;
+}
+
+function syncLedgerMembers() {
+  const ledger = store.activeLedger();
+  if (!ledger) return;
+  const selected = pickerState('ledger-members').selected;
+  store.mutate(() => {
+    ledger.memberIds = selected;
+  });
+  const list = $('#member-list');
+  if (list) list.innerHTML = memberChipList(ledger);
+  const count = document.querySelector('[data-member-count]');
+  if (count) count.textContent = `本账本成员（${ledger.memberIds.length} 人）`;
+  renderHeader();
+  renderLedgerList();
+}
+
+function settingsView() {
+  const me = store.me();
+  const info = dataInfo;
+  const pathRow = info
+    ? `<p class="hint">当前存在：<code>${esc(info.file)}</code>${info.isDefault ? '（应用默认位置）' : '（你自己指定的位置）'}</p>`
+    : '<p class="hint">在桌面应用里可以自己指定存放位置；现在是在浏览器里跑，数据存在浏览器本地。</p>';
+  return `
+    <div class="card">
+      <h2>「我」是谁</h2>
+      <p class="hint">新建账本时你会自动成为成员，算人均也会把你算进去。</p>
+      ${me ? `<p>现在的名字：<strong>${esc(me.name)}</strong></p>` : ''}
+      <form class="inline-form" data-form="set-me">
+        <input type="text" name="name" placeholder="${me ? '改成别的名字' : '先填上你的名字'}" value="${esc(me?.name || '')}" required />
+        <button class="btn btn-primary">${me ? '保存' : '确定'}</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>账本数据存放位置</h2>
+      ${pathRow}
+      <div class="btn-row">
+        <button class="btn" data-action="choose-path" ${info ? '' : 'disabled'}>改到别的位置…</button>
+        <button class="btn" data-action="restore-path" ${info && !info.isDefault ? '' : 'disabled'}>恢复默认位置</button>
+        <button class="btn" data-action="reveal-path" ${info ? '' : 'disabled'}>在文件夹中显示</button>
+      </div>
+      <p class="hint">换位置时会问你要不要把现有账本一起带过去；旧文件不会被删除。</p>
     </div>
     <div class="card card-danger">
-      <h2>账本设置</h2>
-      <form class="inline-form" data-form="rename-ledger"><input type="text" name="name" value="${esc(ledger.name)}" /><button class="btn">改名</button></form>
-      <form class="inline-form" data-form="set-currency">
-        <select name="currency">${['¥', '$', '€', 'HK$', 'JP¥', '₩']
-          .map((c) => `<option value="${c}" ${c === ledger.currency ? 'selected' : ''}>${c}</option>`)
+      <h2>当前账本</h2>
+      <form class="inline-form" data-form="rename-ledger"><input type="text" name="name" value="${esc(store.activeLedger()?.name || '')}" placeholder="账本名称" /><button class="btn">改名</button></form>
+      <div class="inline-form">
+        <select data-action="set-currency">${['¥', '$', '€', 'HK$', 'JP¥', '₩']
+          .map((c) => `<option value="${c}" ${c === currency() ? 'selected' : ''}>${c}</option>`)
           .join('')}</select>
-        <button class="btn">切换币种</button>
-      </form>
-      <button class="btn btn-danger" data-action="delete-ledger">删除这个账本</button>
+        <span class="hint">币种</span>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-danger" data-action="delete-ledger" ${store.activeLedger() ? '' : 'disabled'}>删除这个账本</button>
+      </div>
     </div>`;
 }
 
 function openLedgerModal() {
+  const me = store.me();
   const modal = $('#modal');
-  const pool = store.data.members;
   modal.innerHTML = `
     <form class="card modal-card" data-form="create-ledger">
       <h2>新建账本</h2>
       <label class="field"><span>账本名称</span><input type="text" name="name" placeholder="如：国庆云南行 / 室友房租" required autofocus /></label>
       <label class="field"><span>币种</span><select name="currency"><option value="¥">¥ 人民币</option><option value="$">$ 美元</option><option value="€">€ 欧元</option><option value="HK$">HK$ 港币</option></select></label>
-      <p class="field-label">成员</p>
-      ${
-        pool.length
-          ? `<div class="chip-row" id="modal-members">${pool
-              .map((m) => `<label class="chip chip-member"><input type="checkbox" name="memberIds" value="${m.id}" /> ${esc(m.name)}</label>`)
-              .join('')}</div>`
-          : '<p class="hint">成员池是空的，可先只建账本，稍后在「成员与分类」里加人。</p>'
-      }
-      <label class="field"><span>新增成员（用、或空格分隔，会存进成员池）</span><input type="text" name="newMembers" placeholder="小明、小红" /></label>
+      <p class="field-label">成员（你已经在里面了）</p>
+      ${pickerHtml('new-ledger', '输入名字搜索成员，没有的会自动新建…')}
       <div class="modal-actions"><button type="button" class="btn" data-action="close-modal">取消</button><button type="submit" class="btn btn-primary">建账本</button></div>
     </form>`;
   modal.showModal();
+  mountPicker('new-ledger', me ? [me.id] : [], () => {});
 }
 
 function openEntryModal(entryId) {
@@ -302,10 +525,43 @@ function openEntryModal(entryId) {
   modal.showModal();
 }
 
+function openMeModal() {
+  const modal = $('#modal');
+  modal.innerHTML = `
+    <form class="card modal-card" data-form="set-me">
+      <h2>先给自己起个名字</h2>
+      <p class="hint">新建账本时你会自动成为成员，算人均时会把你算进去。</p>
+      <label class="field"><span>你的名字</span><input type="text" name="name" placeholder="如：小明" required autofocus /></label>
+      <div class="modal-actions"><button type="submit" class="btn btn-primary">好了</button></div>
+    </form>`;
+  modal.showModal();
+}
+
+/* ---------- 提交 ---------- */
+
 function onSubmit(form, formData) {
   const kind = form.dataset.form;
   const ledger = store.activeLedger();
   const value = (name) => (formData.get(name) || '').toString().trim();
+
+  if (kind === 'set-me') {
+    const name = value('name');
+    if (!name) return;
+    const me = store.me();
+    if (me) {
+      if (me.name === name) return;
+      if (store.data.members.some((m) => m.id !== me.id && m.name === name)) {
+        return alert(`成员池里已经有「${name}」了，换个名字或直接用它建账本。`);
+      }
+      store.mutate(() => {
+        me.name = name;
+      });
+    } else {
+      store.mutate(() => store.ensureMe(name));
+    }
+    if ($('#modal').open) $('#modal').close();
+    return render();
+  }
 
   if (kind === 'entry') {
     const amountCents = parseYuanToCents(value('amount'));
@@ -322,35 +578,26 @@ function onSubmit(form, formData) {
       }
     });
     $('#modal').close();
-    return render();
+    render();
+    const amountInput = document.querySelector('[data-form="entry"] [name="amount"]');
+    if (amountInput && !amountInput.closest('#modal')) amountInput.focus();
+    return;
   }
 
   if (kind === 'create-ledger') {
     const name = value('name') || '未命名账本';
-    const newNames = value('newMembers').split(/[、,，\s]+/).filter(Boolean);
+    const memberIds = [...pickerState('new-ledger').selected];
+    const me = store.me();
+    if (me && !memberIds.includes(me.id)) memberIds.unshift(me.id);
     store.mutate((data) => {
-      const ids = formData.getAll('memberIds').map(String);
-      newNames.forEach((n) => {
-        const member = store.findOrCreateMember(n);
-        if (!ids.includes(member.id)) ids.push(member.id);
-      });
-      const created = { id: uid('l'), name, currency: value('currency') || '¥', memberIds: ids, createdAt: Date.now(), entries: [] };
+      const created = { id: uid('l'), name, currency: value('currency') || '¥', memberIds, createdAt: Date.now(), entries: [] };
       data.ledgers.push(created);
       data.ui.activeLedgerId = created.id;
       data.ui.tab = 'flow';
     });
     $('#modal').close();
-    return render();
-  }
-
-  if (kind === 'add-member') {
-    const name = value('name');
-    if (!name) return;
-    store.mutate(() => {
-      const member = store.findOrCreateMember(name);
-      if (!ledger.memberIds.includes(member.id)) ledger.memberIds.push(member.id);
-    });
-    return render();
+    render();
+    return;
   }
 
   if (kind === 'add-category') {
@@ -364,77 +611,122 @@ function onSubmit(form, formData) {
 
   if (kind === 'rename-ledger') {
     const name = value('name');
-    if (name) store.mutate(() => (ledger.name = name));
-    return render();
-  }
-
-  if (kind === 'set-currency') {
-    store.mutate(() => (ledger.currency = value('currency') || '¥'));
+    if (name && ledger) store.mutate(() => (ledger.name = name));
     return render();
   }
 }
 
-function onClick(action, target) {
+/* ---------- 点击 ---------- */
+
+let dataInfo = null;
+
+async function onClick(action, target) {
   const id = target.dataset.id;
   const ledger = store.activeLedger();
 
-  if (action === 'new-ledger') return openLedgerModal();
-  if (action === 'close-modal') return $('#modal').close();
-  if (action === 'select-ledger') {
-    store.mutate((data) => (data.ui.activeLedgerId = id));
-    return render();
+  if (action === 'close-modal') {
+    if (!store.me()) return;
+    return $('#modal').close();
   }
-  if (action === 'tab') {
-    store.mutate((data) => (data.ui.tab = target.dataset.tab));
-    return render();
-  }
-  if (action === 'edit-entry') return openEntryModal(id);
-  if (action === 'delete-entry' && ledger) {
-    if (!confirm('删除这笔记录？')) return;
-    store.mutate(() => {
-      ledger.entries = ledger.entries.filter((e) => e.id !== id);
-    });
-    return render();
-  }
-  if (action === 'toggle-member' && ledger) {
-    store.mutate(() => {
+  if (target.dataset.pick) return pickMember(target.dataset.pick, target.dataset.id);
+  if (target.dataset.create) return createAndPick(target.dataset.create, target.dataset.name);
+  if (target.dataset.unpick) return unpickMember(target.dataset.unpick, target.dataset.id);
+
+  switch (action) {
+    case 'new-ledger':
+      if (!store.me()) return openMeModal();
+      return openLedgerModal();
+    case 'select-ledger':
+      store.mutate((data) => (data.ui.activeLedgerId = id));
+      memberQuery = '';
+      return render();
+    case 'tab':
+      store.mutate((data) => (data.ui.tab = target.dataset.tab));
+      return render();
+    case 'edit-entry':
+      return openEntryModal(id);
+    case 'delete-entry':
+      if (!ledger || !confirm('删除这笔记录？')) return;
+      store.mutate(() => {
+        ledger.entries = ledger.entries.filter((e) => e.id !== id);
+      });
+      return render();
+    case 'toggle-member':
+      if (!ledger) return;
       if (ledger.memberIds.includes(id)) {
+        if (store.isMe(id) && !confirm('确定把你自己在账本里的人数去掉吗？人均会按剩下的人数算。')) return;
         if (ledger.entries.some((e) => e.payerId === id)) return alert('这个人已经付过钱了，先改或删掉相关记录再移出。');
-        ledger.memberIds = ledger.memberIds.filter((m) => m !== id);
+        store.mutate(() => {
+          ledger.memberIds = ledger.memberIds.filter((m) => m !== id);
+        });
       } else {
-        ledger.memberIds.push(id);
+        store.mutate(() => ledger.memberIds.push(id));
       }
-    });
-    return render();
-  }
-  if (action === 'remove-category') {
-    const name = target.dataset.name;
-    store.mutate((data) => {
-      if (data.categories.length <= 1) return alert('至少保留一个分类。');
-      data.categories = data.categories.filter((c) => c !== name);
-      if (!data.categories.length) data.categories = [...DEFAULT_CATEGORIES];
-    });
-    return render();
-  }
-  if (action === 'delete-ledger' && ledger) {
-    if (!confirm(`确认删除账本「${ledger.name}」以及其中 ${ledger.entries.length} 笔记录？`)) return;
-    store.mutate((data) => {
-      data.ledgers = data.ledgers.filter((l) => l.id !== ledger.id);
-      data.ui.activeLedgerId = data.ledgers[0]?.id || null;
-    });
-    return render();
+      return render();
+    case 'remove-category': {
+      const name = target.dataset.name;
+      store.mutate((data) => {
+        data.categories = data.categories.filter((c) => c !== name);
+        if (!data.categories.length) data.categories = [...DEFAULT_CATEGORIES];
+      });
+      return render();
+    }
+    case 'delete-ledger':
+      if (!ledger || !confirm(`确认删除账本「${ledger.name}」以及其中 ${ledger.entries.length} 笔记录？`)) return;
+      store.mutate((data) => {
+        data.ledgers = data.ledgers.filter((l) => l.id !== ledger.id);
+        data.ui.activeLedgerId = data.ledgers[0]?.id || null;
+      });
+      return render();
+    case 'choose-path': {
+      const result = await window.aaApi?.chooseDataFile?.();
+      if (result && !result.canceled) return window.location.reload();
+      return refreshDataInfo();
+    }
+    case 'restore-path': {
+      const result = await window.aaApi?.restoreDefaultPath?.();
+      if (result && !result.canceled) return window.location.reload();
+      return refreshDataInfo();
+    }
+    case 'reveal-path':
+      return window.aaApi?.revealDataFile?.();
+    default:
+      return undefined;
   }
 }
 
+async function refreshDataInfo() {
+  dataInfo = window.aaApi?.dataInfo ? await window.aaApi.dataInfo() : null;
+  $('#data-path').textContent = dataInfo ? `数据文件：${dataInfo.file}` : '浏览器预览模式';
+  if (dataInfo && !dataInfo.isDefault) $('#data-path').textContent += '（自定义位置）';
+  return dataInfo;
+}
+
 document.addEventListener('click', (event) => {
-  if (event.target.id === 'modal') return $('#modal').close();
-  const target = event.target.closest('[data-action]');
-  if (target) {
-    onClick(target.dataset.action, target);
+  if (event.target.id === 'modal' && store.me()) {
+    $('#modal').close();
     return;
   }
-  const tab = event.target.closest('.tab');
-  if (tab) onClick('tab', tab);
+  if (!event.target.closest('.picker')) closePickerMenus();
+  const target = event.target.closest('[data-action],[data-pick],[data-create],[data-unpick]');
+  if (target) onClick(target.dataset.action || '', target);
+});
+
+document.addEventListener('input', (event) => {
+  const search = event.target.closest('[data-action="member-search"]');
+  if (!search) return;
+  memberQuery = search.value;
+  const list = $('#member-list');
+  if (list) list.innerHTML = memberChipList(store.activeLedger());
+});
+
+document.addEventListener('change', (event) => {
+  const select = event.target.closest('[data-action="set-currency"]');
+  if (!select || !store.activeLedger()) return;
+  store.mutate(() => {
+    store.activeLedger().currency = select.value;
+  });
+  render();
 });
 
 document.addEventListener('submit', (event) => {
@@ -442,14 +734,18 @@ document.addEventListener('submit', (event) => {
   if (!form) return;
   event.preventDefault();
   onSubmit(form, new FormData(form));
-  form.reset();
+  if (!form.closest('#modal')) form.reset();
 });
 
 async function boot() {
   await store.init();
-  const pathText = window.aaApi?.dataPath ? await window.aaApi.dataPath() : null;
-  if (pathText) $('#data-path').textContent = `数据文件：${pathText}`;
+  await refreshDataInfo();
+  window.aaApi?.onDataPathChanged?.(() => window.location.reload());
+  $('#modal').addEventListener('cancel', (event) => {
+    if (!store.me()) event.preventDefault();
+  });
   render();
+  if (!store.me()) openMeModal();
 }
 
 boot();

@@ -6,7 +6,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/"
+    "test": "node --test"
   },
   "author": "user",
   "license": "UNLICENSED",

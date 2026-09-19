@@ -6,6 +6,7 @@ export const DEFAULT_CATEGORIES = ['餐饮', '交通', '住宿', '门票', '日�
 export function blank() {
   return {
     version: 1,
+    settings: { meId: null },
     members: [],
     categories: [...DEFAULT_CATEGORIES],
     ledgers: [],
@@ -37,8 +38,31 @@ function migrate(raw) {
       }))
     : [];
   data.categories = Array.isArray(raw.categories) && raw.categories.length ? raw.categories : [...DEFAULT_CATEGORIES];
+  data.settings = { ...base.settings, ...(raw.settings || {}) };
   data.ui = { ...base.ui, ...(raw.ui || {}) };
+  if (data.settings.meId && !data.members.some((m) => m.id === data.settings.meId)) data.settings.meId = null;
   return data;
+}
+
+export function searchMembers(members, query) {
+  const text = String(query || '').trim().toLowerCase();
+  if (!text) return members;
+  return members.filter((m) => m.name.toLowerCase().includes(text));
+}
+
+export function filterMembers(members, query, excludeIds = []) {
+  const picked = new Set(excludeIds);
+  const pool = members.filter((m) => !picked.has(m.id));
+  const text = String(query || '').trim().toLowerCase();
+  if (!text) {
+    return [...pool].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 8);
+  }
+  return pool
+    .map((m) => ({ m, at: m.name.toLowerCase().indexOf(text) }))
+    .filter((x) => x.at >= 0)
+    .sort((a, b) => a.at - b.at || a.m.name.length - b.m.name.length)
+    .slice(0, 8)
+    .map((x) => x.m);
 }
 
 export const store = {
@@ -86,6 +110,21 @@ export const store = {
     const created = { id: uid('m'), name: trimmed, createdAt: Date.now() };
     this.data.members.push(created);
     return created;
+  },
+
+  me() {
+    const { meId } = this.data.settings;
+    return meId ? this.data.members.find((m) => m.id === meId) || null : null;
+  },
+
+  isMe(id) {
+    return Boolean(this.data.settings.meId) && this.data.settings.meId === id;
+  },
+
+  ensureMe(name) {
+    const member = this.findOrCreateMember(name || '我');
+    this.data.settings.meId = member.id;
+    return member;
   },
 };
 
