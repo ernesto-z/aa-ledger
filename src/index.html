@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    />
+    <title>AA 账本</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">¥</span>
+        <span>AA 账本</span>
+      </div>
+      <nav id="ledger-list" class="ledger-list" aria-label="账本列表"></nav>
+      <div class="sidebar-foot">
+        <button id="new-ledger" class="btn btn-ghost btn-block" data-action="new-ledger">+ 新建账本</button>
+        <p id="data-path" class="hint"></p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header id="ledger-header" class="ledger-header"></header>
+      <nav class="tabs" id="tabs">
+        <button class="tab is-active" data-tab="flow">流水</button>
+        <button class="tab" data-tab="settle">结算</button>
+        <button class="tab" data-tab="members">成员与分类</button>
+      </nav>
+      <section id="view" class="view"></section>
+    </main>
+
+    <dialog id="modal"></dialog>
+
+    <script type="module" src="./js/app.mjs"></script>
+  </body>
+</html>
