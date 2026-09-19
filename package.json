@@ -6,11 +6,13 @@
   "main": "electron/main.cjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test"
+    "test": "node --test",
+    "pack": "node scripts/pack.mjs"
   },
   "author": "user",
   "license": "UNLICENSED",
   "devDependencies": {
+    "@electron/packager": "^20.3.0",
     "electron": "^33.2.0"
   }
 }

@@ -16,6 +16,19 @@ npm start
 node node_modules/electron/install.js
 ```
 
+## 打包成免安装程序
+
+```bash
+npm run pack
+```
+
+产物在 `release\aa-ledger-win32-x64\`，双击里面的 `aa-ledger.exe` 即用，不用装、不写注册表，
+整个文件夹拷到别的 Windows 机器上也能跑（约 270MB，主要是 Electron 本体）。
+数据位置不变，仍然是 `%APPDATA%\aa-ledger\aa-ledger-data.json`，所以在开发目录跑和在打包版里记的账是同一份。
+
+打包脚本会优先用本地已经下载好的 Electron 压缩包（`npm install` 时就下过了），因此 GitHub 连不上也能打包；
+如果本地没缓存，它会尝试联网下载。要出 32 位或其他平台的包：`node scripts/pack.mjs win32 ia32`。
+
 ## 概念
 
 - **账本 = 用户组**：一次旅行、一个宿舍、一组合租室友各建一个账本，彼此完全隔离。
@@ -50,6 +63,7 @@ src/        渲染层：index.html + styles.css + js/
   js/store.mjs   数据模型、迁移与持久化
   js/app.mjs     界面渲染与交互
 test/       算法与数据模型的单元测试
+scripts/    打包脚本（不进包）
 ```
 
 ```bash
