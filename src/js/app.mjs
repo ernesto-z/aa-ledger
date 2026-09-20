@@ -1,4 +1,4 @@
-import { store, uid, parseYuanToCents, today, DEFAULT_CATEGORIES, filterMembers, searchMembers } from './store.mjs';
+import { store, uid, parseYuanToCents, today, DEFAULT_CATEGORIES, filterMembers, searchMembers, mergeData, looksLikeData, migrate } from './store.mjs';
 import { settle, formatCents } from './calc.mjs';
 
 const $ = (sel) => document.querySelector(sel);
@@ -322,14 +322,14 @@ function settleView(ledger) {
     .map(
       (m) => `
       <tr>
-        <td>${esc(m.name)}${store.isMe(m.id) ? '<em class="tag">我</em>' : ''}</td>
-        <td class="num">${money(m.paidCents)}</td>
-        <td class="num">${money(m.shareCents)}</td>
-        <td class="num ${m.balanceCents > 0 ? 'pos' : m.balanceCents < 0 ? 'neg' : ''}">
+        <td data-label="成员">${esc(m.name)}${store.isMe(m.id) ? '<em class="tag">我</em>' : ''}</td>
+        <td class="num" data-label="已付">${money(m.paidCents)}</td>
+        <td class="num" data-label="应负担">${money(m.shareCents)}</td>
+        <td class="num ${m.balanceCents > 0 ? 'pos' : m.balanceCents < 0 ? 'neg' : ''}" data-label="差额">
           ${m.balanceCents > 0 ? '应收 ' : m.balanceCents < 0 ? '应补 ' : '—'}${m.balanceCents === 0 ? '' : money(Math.abs(m.balanceCents))}
         </td>
-        <td class="num">${m.paidCount} 次${m.extraTurns > 0 ? `（多 ${m.extraTurns}）` : ''}</td>
-        <td>${m.owedTurns > 0 ? `<span class="badge badge-warn">还欠 ${m.owedTurns} 次掏钱</span>` : ''} ${statusBadge(m.status)}</td>
+        <td class="num" data-label="掏钱次数">${m.paidCount} 次${m.extraTurns > 0 ? `（多 ${m.extraTurns}）` : ''}</td>
+        <td data-label="人情状态">${m.owedTurns > 0 ? `<span class="badge badge-warn">还欠 ${m.owedTurns} 次掏钱</span>` : ''} ${statusBadge(m.status)}</td>
       </tr>`,
     )
     .join('');
@@ -356,7 +356,7 @@ function settleView(ledger) {
     .map((e) => {
       const detail = shareOf(e.id);
       const parts = ledger.memberIds.map((id) => `${esc(store.memberName(id))} ${money(detail.shares[id])}`).join(' · ');
-      return `<tr><td>${esc(e.date)}</td><td class="num">${money(e.amountCents)}</td><td class="num">${money(detail.perCapitaCents)}</td><td class="hint">${esc(store.memberName(e.payerId))} 掏的</td><td>${parts}</td></tr>`;
+      return `<tr><td data-label="日期">${esc(e.date)}</td><td class="num" data-label="金额">${money(e.amountCents)}</td><td class="num" data-label="人均">${money(detail.perCapitaCents)}</td><td class="hint" data-label="付款人">${esc(store.memberName(e.payerId))} 掏的</td><td data-label="每人份额">${parts}</td></tr>`;
     })
     .join('');
 
@@ -445,6 +445,98 @@ function syncLedgerMembers() {
   renderLedgerList();
 }
 
+/* ---------- 导入 / 合并 ---------- */
+
+let pendingMerge = null;
+let mergeUndo = null;
+let importError = '';
+
+function canUndoMerge() {
+  return Boolean(mergeUndo) && !pendingMerge && JSON.stringify(store.data) === mergeUndo.after;
+}
+
+function mergeReportHtml(r) {
+  const skipped = r.skipped.slice(0, 6).map((s) => `<li>${esc(s)}</li>`).join('');
+  const more = r.skipped.length > 6 ? `<li class="hint">……共 ${r.skipped.length} 笔</li>` : '';
+  return `
+      <div class="merge-report">
+        <p>先试了一遍：会新增 <strong>${r.entryAdded}</strong> 笔、<strong>${r.ledgerAdded}</strong> 个账本、<strong>${r.memberAdded}</strong> 个成员、${r.categoryAdded} 个分类；${r.entrySkipped} 笔本机已经有了，保留本机那一版。</p>
+        ${skipped ? `<p class="hint">保留本机的有：</p><ul class="clean">${skipped}${more}</ul>` : ''}
+        <div class="btn-row">
+          <button class="btn btn-primary" data-action="confirm-merge">确认合并</button>
+          <button class="btn" data-action="cancel-merge">先不合并</button>
+        </div>
+      </div>`;
+}
+
+function mergeCard() {
+  return `
+    <div class="card">
+      <h2>导入 / 合并另一台的账本</h2>
+      <p class="hint">选另一台设备「导出一份 JSON」得到的文件。合并只做加法：不删本机任何记录，成员按名字认人，同名的账本算同一本。</p>
+      ${importError ? `<p class="merge-error">${esc(importError)}</p>` : ''}
+      <div class="btn-row">
+        <label class="btn"><input type="file" class="file-input" accept=".json,application/json" data-action="import-file" />选择 JSON 文件…</label>
+        <button class="btn" data-action="export-json">导出一份 JSON</button>
+      </div>
+      ${pendingMerge ? mergeReportHtml(pendingMerge.report) : ''}
+      ${canUndoMerge() ? '<div class="btn-row"><button class="btn" data-action="undo-merge">撤销刚才的合并</button></div>' : ''}
+    </div>`;
+}
+
+function stageMergeFromText(text) {
+  importError = '';
+  pendingMerge = null;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    importError = '这个文件不是合法的 JSON，读不了。';
+    return;
+  }
+  if (!looksLikeData(parsed)) {
+    importError = '这个文件看着不是 AA 账本导出的（缺 members / ledgers）。';
+    return;
+  }
+  const result = mergeData(store.data, migrate(parsed));
+  const { entryAdded, ledgerAdded, memberAdded, categoryAdded, entrySkipped } = result.report;
+  if (!entryAdded && !ledgerAdded && !memberAdded && !categoryAdded) {
+    importError = `这份文件里的东西本机都有了（${entrySkipped} 笔全部同号，保留本机版本），没有要合并的。`;
+    return;
+  }
+  pendingMerge = result;
+}
+
+function commitMerge() {
+  if (!pendingMerge) return;
+  mergeUndo = { before: JSON.parse(JSON.stringify(store.data)), after: '' };
+  store.data = pendingMerge.data;
+  store.persist();
+  mergeUndo.after = JSON.stringify(store.data);
+  pendingMerge = null;
+  render();
+}
+
+function undoMerge() {
+  if (!canUndoMerge()) return;
+  store.data = mergeUndo.before;
+  store.persist();
+  mergeUndo = null;
+  render();
+}
+
+function exportJson() {
+  const blob = new Blob([JSON.stringify(store.data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `aa-ledger-${today()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function settingsView() {
   const me = store.me();
   const info = dataInfo;
@@ -471,6 +563,7 @@ function settingsView() {
       </div>
       <p class="hint">换位置时会问你要不要把现有账本一起带过去；旧文件不会被删除。</p>
     </div>
+    ${mergeCard()}
     <div class="card card-danger">
       <h2>当前账本</h2>
       <form class="inline-form" data-form="rename-ledger"><input type="text" name="name" value="${esc(store.activeLedger()?.name || '')}" placeholder="账本名称" /><button class="btn">改名</button></form>
@@ -539,6 +632,24 @@ function openMeModal() {
 
 /* ---------- 提交 ---------- */
 
+// 校验失败时不用 alert：那会把焦点丢回按钮，而且调用方还会把整张表单清空。
+function showFieldError(form, name, msg) {
+  let p = form.querySelector('.field-error');
+  if (!p) {
+    p = document.createElement('p');
+    p.className = 'field-error';
+    form.append(p);
+  }
+  p.textContent = msg;
+  const input = form.querySelector(`[name="${name}"]`);
+  if (input) {
+    input.setAttribute('aria-invalid', 'true');
+    input.focus();
+    if (input.tagName === 'INPUT' && input.type === 'text') input.select();
+  }
+  return false;
+}
+
 function onSubmit(form, formData) {
   const kind = form.dataset.form;
   const ledger = store.activeLedger();
@@ -551,7 +662,7 @@ function onSubmit(form, formData) {
     if (me) {
       if (me.name === name) return;
       if (store.data.members.some((m) => m.id !== me.id && m.name === name)) {
-        return alert(`成员池里已经有「${name}」了，换个名字或直接用它建账本。`);
+        return showFieldError(form, 'name', `成员池里已经有「${name}」了，换个名字或直接用它建账本。`);
       }
       store.mutate(() => {
         me.name = name;
@@ -565,8 +676,11 @@ function onSubmit(form, formData) {
 
   if (kind === 'entry') {
     const amountCents = parseYuanToCents(value('amount'));
-    if (amountCents === null || amountCents <= 0) return alert('金额请输入大于 0 的数字。');
-    if (!ledger) return alert('请先选择账本。');
+    if (amountCents === null || amountCents <= 0) return showFieldError(form, 'amount', '金额请输入大于 0 的数字。');
+    if (!ledger) {
+      alert('请先选择账本。');
+      return false;
+    }
     const entryId = value('entryId');
     store.mutate((data) => {
       const l = data.ledgers.find((x) => x.id === ledger.id);
@@ -688,6 +802,16 @@ async function onClick(action, target) {
       if (result && !result.canceled) return window.location.reload();
       return refreshDataInfo();
     }
+    case 'confirm-merge':
+      commitMerge();
+      return;
+    case 'cancel-merge':
+      pendingMerge = null;
+      return render();
+    case 'undo-merge':
+      return undoMerge();
+    case 'export-json':
+      return exportJson();
     case 'reveal-path':
       return window.aaApi?.revealDataFile?.();
     default:
@@ -713,6 +837,11 @@ document.addEventListener('click', (event) => {
 });
 
 document.addEventListener('input', (event) => {
+  const form = event.target.closest('form[data-form]');
+  if (form) {
+    form.querySelector('.field-error')?.remove();
+    for (const el of form.querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
+  }
   const search = event.target.closest('[data-action="member-search"]');
   if (!search) return;
   memberQuery = search.value;
@@ -720,7 +849,15 @@ document.addEventListener('input', (event) => {
   if (list) list.innerHTML = memberChipList(store.activeLedger());
 });
 
-document.addEventListener('change', (event) => {
+document.addEventListener('change', async (event) => {
+  const file = event.target.closest('[data-action="import-file"]');
+  if (file) {
+    const picked = file.files?.[0];
+    file.value = '';
+    if (!picked) return;
+    stageMergeFromText(await picked.text());
+    return render();
+  }
   const select = event.target.closest('[data-action="set-currency"]');
   if (!select || !store.activeLedger()) return;
   store.mutate(() => {
@@ -733,7 +870,7 @@ document.addEventListener('submit', (event) => {
   const form = event.target.closest('form[data-form]');
   if (!form) return;
   event.preventDefault();
-  onSubmit(form, new FormData(form));
+  if (onSubmit(form, new FormData(form)) === false) return;
   if (!form.closest('#modal')) form.reset();
 });
 

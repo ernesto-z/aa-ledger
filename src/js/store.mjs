@@ -18,7 +18,7 @@ export function uid(prefix = 'id') {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-4)}`;
 }
 
-function migrate(raw) {
+export function migrate(raw) {
   const base = blank();
   if (!raw || typeof raw !== 'object') return base;
   const data = { ...base, ...raw };
@@ -37,7 +37,10 @@ function migrate(raw) {
           : [],
       }))
     : [];
-  data.categories = Array.isArray(raw.categories) && raw.categories.length ? raw.categories : [...DEFAULT_CATEGORIES];
+  const cats = Array.isArray(raw.categories)
+    ? [...new Set(raw.categories.map((c) => String(c ?? '').trim()).filter(Boolean))]
+    : [];
+  data.categories = cats.length ? cats : [...DEFAULT_CATEGORIES];
   data.settings = { ...base.settings, ...(raw.settings || {}) };
   data.ui = { ...base.ui, ...(raw.ui || {}) };
   if (data.settings.meId && !data.members.some((m) => m.id === data.settings.meId)) data.settings.meId = null;
@@ -63,6 +66,83 @@ export function filterMembers(members, query, excludeIds = []) {
     .sort((a, b) => a.at - b.at || a.m.name.length - b.m.name.length)
     .slice(0, 8)
     .map((x) => x.m);
+}
+
+const normName = (name) => String(name || '').trim().toLowerCase();
+
+export function looksLikeData(raw) {
+  return Boolean(raw) && typeof raw === 'object' && Array.isArray(raw.ledgers) && Array.isArray(raw.members);
+}
+
+// 把另一台设备的账本并进来：成员按 id、再按名字去重；账本按 id 合并；一笔按 id 去重，
+// 撞 id 的笔保留本机那份（编辑过的记录不会被覆盖掉），只在报告里列出来。
+export function mergeData(current, incoming) {
+  const merged = JSON.parse(JSON.stringify(current));
+  const report = {
+    ledgerAdded: 0,
+    ledgerMerged: 0,
+    memberAdded: 0,
+    entryAdded: 0,
+    entrySkipped: 0,
+    categoryAdded: 0,
+    skipped: [],
+  };
+
+  const memberById = new Map(merged.members.map((m) => [m.id, m]));
+  const memberByName = new Map(merged.members.map((m) => [normName(m.name), m]));
+  const memberMap = new Map();
+  for (const m of incoming.members || []) {
+    const target = memberById.get(m.id) || memberByName.get(normName(m.name));
+    if (target) {
+      memberMap.set(m.id, target.id);
+      continue;
+    }
+    const created = { id: m.id, name: m.name, createdAt: Number.isFinite(m.createdAt) ? m.createdAt : Date.now() };
+    merged.members.push(created);
+    memberById.set(created.id, created);
+    memberByName.set(normName(created.name), created);
+    memberMap.set(m.id, created.id);
+    report.memberAdded += 1;
+  }
+
+  const ledgerById = new Map(merged.ledgers.map((l) => [l.id, l]));
+  for (const l of incoming.ledgers || []) {
+    const mappedMembers = [...new Set((l.memberIds || []).map((id) => memberMap.get(id) ?? id))];
+    let target = ledgerById.get(l.id);
+    if (!target) {
+      target = { ...l, memberIds: [], entries: [] };
+      merged.ledgers.push(target);
+      ledgerById.set(l.id, target);
+      report.ledgerAdded += 1;
+    } else {
+      report.ledgerMerged += 1;
+    }
+    for (const id of mappedMembers) {
+      if (!target.memberIds.includes(id)) target.memberIds.push(id);
+    }
+    const seen = new Set(target.entries.map((e) => e.id));
+    for (const e of l.entries || []) {
+      const payerId = memberMap.get(e.payerId) ?? e.payerId;
+      if (seen.has(e.id)) {
+        report.entrySkipped += 1;
+        report.skipped.push(`${l.name || '未命名账本'} · ${e.date || ''} ${e.note || '（无备注）'}`);
+        continue;
+      }
+      target.entries.push({ ...e, payerId });
+      seen.add(e.id);
+      report.entryAdded += 1;
+    }
+  }
+
+  for (const c of incoming.categories || []) {
+    if (!merged.categories.includes(c)) {
+      merged.categories.push(c);
+      report.categoryAdded += 1;
+    }
+  }
+
+  if (!merged.categories.length) merged.categories = [...DEFAULT_CATEGORIES];
+  return { data: merged, report };
 }
 
 export const store = {
