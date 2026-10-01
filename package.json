@@ -6,6 +6,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "start": "electron .",
+    "start:test": "node scripts/scratch-start.mjs",
     "test": "node --test",
     "pack": "node scripts/pack.mjs"
   },

@@ -147,6 +147,8 @@ export function mergeData(current, incoming) {
 
 export const store = {
   data: blank(),
+  saveProblem: null,
+  onSaveProblem: null,
 
   async init() {
     const saved = bridge ? await bridge.loadData() : JSON.parse(localStorage.getItem(LS_KEY) || 'null');
@@ -160,7 +162,20 @@ export const store = {
   persist() {
     const snapshot = JSON.parse(JSON.stringify(this.data));
     if (bridge) {
-      bridge.saveData(snapshot);
+      const before = this.saveProblem;
+      Promise.resolve(bridge.saveData(snapshot))
+        .then((result) => {
+          this.saveProblem =
+            result && result.ok === false
+              ? '刚才的保存被拦下了：磁盘上的账本在你打开之后又被别处改过，本次改动已另存为副本，没有覆盖它。菜单「数据 → 从备份恢复…」可以找回任意一份。'
+              : null;
+        })
+        .catch(() => {
+          this.saveProblem = '保存失败：写入数据文件时出错。请检查磁盘空间或文件权限。';
+        })
+        .finally(() => {
+          if (this.saveProblem !== before && typeof this.onSaveProblem === 'function') this.onSaveProblem(this.saveProblem);
+        });
     } else {
       localStorage.setItem(LS_KEY, JSON.stringify(snapshot));
     }

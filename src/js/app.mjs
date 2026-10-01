@@ -190,6 +190,14 @@ function render() {
   renderHeader();
   renderTabs();
   renderView();
+  showSaveProblem(store.saveProblem);
+}
+
+function showSaveProblem(msg) {
+  const el = $('#save-problem');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.hidden = !msg;
 }
 
 function renderLedgerList() {
@@ -540,8 +548,11 @@ function exportJson() {
 function settingsView() {
   const me = store.me();
   const info = dataInfo;
+  const locked = Boolean(info?.lockedByEnv);
   const pathRow = info
-    ? `<p class="hint">当前存在：<code>${esc(info.file)}</code>${info.isDefault ? '（应用默认位置）' : '（你自己指定的位置）'}</p>`
+    ? locked
+      ? `<p class="hint">测试用数据文件：<code>${esc(info.file)}</code>（由环境变量 AA_LEDGER_DATA 指定，这次启动只读写它，不会碰到你平时的账本）</p>`
+      : `<p class="hint">当前存在：<code>${esc(info.file)}</code>${info.isDefault ? '（应用默认位置）' : '（你自己指定的位置）'}</p>`
     : '<p class="hint">在桌面应用里可以自己指定存放位置；现在是在浏览器里跑，数据存在浏览器本地。</p>';
   return `
     <div class="card">
@@ -557,11 +568,12 @@ function settingsView() {
       <h2>账本数据存放位置</h2>
       ${pathRow}
       <div class="btn-row">
-        <button class="btn" data-action="choose-path" ${info ? '' : 'disabled'}>改到别的位置…</button>
-        <button class="btn" data-action="restore-path" ${info && !info.isDefault ? '' : 'disabled'}>恢复默认位置</button>
+        <button class="btn" data-action="choose-path" ${info && !locked ? '' : 'disabled'}>改到别的位置…</button>
+        <button class="btn" data-action="restore-path" ${info && !locked && !info.isDefault ? '' : 'disabled'}>恢复默认位置</button>
         <button class="btn" data-action="reveal-path" ${info ? '' : 'disabled'}>在文件夹中显示</button>
       </div>
       <p class="hint">换位置时会问你要不要把现有账本一起带过去；旧文件不会被删除。</p>
+      ${info?.backupDir ? `<p class="hint">每次保存前会自动留一份备份（最多 20 份，放在 <code>${esc(info.backupDir)}</code>）。想找回旧账：菜单「数据 → 从备份恢复…」。</p>` : ''}
     </div>
     ${mergeCard()}
     <div class="card card-danger">
@@ -822,7 +834,8 @@ async function onClick(action, target) {
 async function refreshDataInfo() {
   dataInfo = window.aaApi?.dataInfo ? await window.aaApi.dataInfo() : null;
   $('#data-path').textContent = dataInfo ? `数据文件：${dataInfo.file}` : '浏览器预览模式';
-  if (dataInfo && !dataInfo.isDefault) $('#data-path').textContent += '（自定义位置）';
+  if (dataInfo?.lockedByEnv) $('#data-path').textContent += '（测试用数据文件）';
+  else if (dataInfo && !dataInfo.isDefault) $('#data-path').textContent += '（自定义位置）';
   return dataInfo;
 }
 
@@ -877,6 +890,7 @@ document.addEventListener('submit', (event) => {
 async function boot() {
   await store.init();
   await refreshDataInfo();
+  store.onSaveProblem = showSaveProblem;
   window.aaApi?.onDataPathChanged?.(() => window.location.reload());
   $('#modal').addEventListener('cancel', (event) => {
     if (!store.me()) event.preventDefault();
