@@ -23,6 +23,11 @@
       </div>
     </aside>
 
+    <header class="m-top" aria-label="账本切换">
+      <span class="m-seal" aria-hidden="true">¥</span>
+      <button id="m-switcher" class="m-switcher" type="button" data-action="open-switcher" aria-label="切换账本"></button>
+    </header>
+
     <main class="main">
       <header id="ledger-header" class="ledger-header"></header>
       <p id="save-problem" class="save-problem" hidden></p>
@@ -33,9 +38,18 @@
         <button class="tab" data-action="tab" data-tab="settings">设置</button>
       </nav>
       <section id="view" class="view"></section>
+
+      <button id="fab" class="fab" type="button" data-action="toggle-entry-form" hidden>
+        <svg class="fab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13" /></svg>
+        <span>记一笔</span>
+      </button>
     </main>
 
+    <div class="drawer-scrim" data-action="close-entry-form" aria-hidden="true"></div>
+
     <dialog id="modal"></dialog>
+    <dialog id="switcher" class="sheet-dialog switcher-dialog" aria-label="选择账本"></dialog>
+    <dialog id="ledger-menu" class="sheet-dialog menu-dialog" aria-label="账本操作"></dialog>
 
     <script type="module" src="./js/app.mjs"></script>
   </body>

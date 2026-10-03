@@ -39,6 +39,21 @@ function meTag(id) {
   return store.isMe(id) ? '<em class="tag">我</em>' : '';
 }
 
+const ICON = {
+  chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5l6 6 6-6" /></svg>',
+  search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M15.6 15.6L20 20" /></svg>',
+  dots: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>',
+};
+
+const TAB_ICONS = {
+  flow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15M4.5 12h10M4.5 17h13" /></svg>',
+  settle: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5" /><path d="M9.5 9.5L12 12.5l2.5-3M12 12.5V16M10 14.5h4" /></svg>',
+  members: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2" /><path d="M3.8 19.5a5.4 5.4 0 0 1 10.4 0M16.2 6.3a3 3 0 0 1 0 5.6M17.6 14.6a5.2 5.2 0 0 1 2.8 4.4" /></svg>',
+  settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h9M17.5 7h2M4.5 12h3M11.5 12h8M4.5 17h9M17.5 17h2" /><circle cx="15.5" cy="7" r="2" /><circle cx="9.5" cy="12" r="2" /><circle cx="15.5" cy="17" r="2" /></svg>',
+};
+
+const CURRENCIES = ['¥', '$', '€', 'HK$', 'JP¥', '₩'];
+
 /* ---------- 成员搜索式输入框 ---------- */
 
 const pickers = new Map();
@@ -197,13 +212,188 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
+/* ---------- 手机端视图：顶栏、选择账本面板、账本操作 ---------- */
+
+const isMobile = () => window.matchMedia('(max-width: 720px)').matches;
+const moneyIn = (ledger, cents) => formatCents(Math.round(cents), ledger.currency || '¥');
+const findLedger = (id) => store.data.ledgers.find((l) => l.id === id) || null;
+
+let switcherQuery = '';
+let menuLedgerId = null;
+
+function ledgerStats(ledger) {
+  const result = settle(ledger, store.memberNamesById());
+  return { result, me: result.perMember.find((m) => store.isMe(m.id)) || null };
+}
+
+// 面板里每本按最近一次记账时间排序，长期不用的自然沉到下面。
+function lastEntryDate(ledger) {
+  let mx = '';
+  for (const e of ledger.entries) if (e.date > mx) mx = e.date;
+  if (mx) return mx;
+  return ledger.createdAt ? new Date(ledger.createdAt).toISOString().slice(0, 10) : '';
+}
+
+function balanceHtml(ledger, me, withTurn) {
+  // 一笔都还没记的账本谈不上欠不欠，留白比「已平账」诚实
+  if (!me || !ledger.entries.length) return '';
+  let pill;
+  if (me.balanceCents > 0) pill = `<span class="m-balance is-in">应收 ${moneyIn(ledger, me.balanceCents)}</span>`;
+  else if (me.balanceCents < 0) pill = `<span class="m-balance is-out">应补 ${moneyIn(ledger, -me.balanceCents)}</span>`;
+  else pill = '<span class="m-balance is-flat">已平账</span>';
+  const turn = withTurn && me.owedTurns > 0 ? `<span class="lc-turn">欠掏 ${me.owedTurns} 次</span>` : '';
+  return pill + turn;
+}
+
+function renderMobileTop() {
+  const btn = $('#m-switcher');
+  if (!btn) return;
+  const ledger = store.activeLedger();
+  if (!ledger) {
+    btn.innerHTML = `<span class="m-name">还没有账本</span><span class="m-caret">${ICON.chevron}</span>`;
+    return;
+  }
+  const { me } = ledgerStats(ledger);
+  btn.innerHTML = `<span class="m-name">${esc(ledger.name)}</span>${balanceHtml(ledger, me, false)}<span class="m-caret">${ICON.chevron}</span>`;
+}
+
+function switcherCards() {
+  const q = switcherQuery.trim().toLowerCase();
+  const items = [...store.data.ledgers]
+    .sort((a, b) => {
+      const da = lastEntryDate(a);
+      const db = lastEntryDate(b);
+      if (da !== db) return da < db ? 1 : -1;
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    })
+    .filter((l) => !q || l.name.toLowerCase().includes(q));
+  if (!items.length) {
+    return `<p class="switcher-none">${
+      q ? `没有名字带「${esc(switcherQuery.trim())}」的账本。` : '还没有账本，点下面「新建账本」开始。'
+    }</p>`;
+  }
+  return items
+    .map((l, i) => {
+      const active = l.id === store.data.ui.activeLedgerId;
+      const { result, me } = ledgerStats(l);
+      const when = result.entryCount ? `最近记账 ${esc(lastEntryDate(l))}` : '还没记过';
+      return `
+        <article class="ledger-card ${active ? 'is-active' : ''}" style="--i:${i}">
+          <button type="button" class="lc-hit" data-action="select-ledger" data-id="${l.id}">
+            <span class="lc-name">${esc(l.name)}${active ? '<em class="tag">当前</em>' : ''}</span>
+            <span class="lc-meta">${when}</span>
+          </button>
+          <span class="lc-right">${balanceHtml(l, me, true)}</span>
+          <button type="button" class="lc-menu" data-action="ledger-menu" data-id="${l.id}" aria-label="「${esc(l.name)}」的操作">${ICON.dots}</button>
+        </article>`;
+    })
+    .join('');
+}
+
+function switcherHtml() {
+  return `
+    <div class="switcher">
+      <div class="switcher-head">
+        <h2 class="switcher-title">选择账本</h2>
+        <button type="button" class="switcher-x" data-action="close-switcher" aria-label="关闭">×</button>
+        <label class="switcher-search">
+          ${ICON.search}
+          <input type="search" data-action="switcher-search" placeholder="按账本名搜索…" value="${esc(switcherQuery)}" aria-label="搜索账本" />
+        </label>
+      </div>
+      <div class="switcher-body" id="switcher-body">${switcherCards()}</div>
+      <div class="switcher-foot">
+        <button type="button" class="btn btn-ghost btn-block" data-action="new-ledger">＋ 新建账本</button>
+      </div>
+    </div>`;
+}
+
+function openSwitcher() {
+  switcherQuery = '';
+  const dlg = $('#switcher');
+  dlg.innerHTML = switcherHtml();
+  dlg.showModal();
+  // 焦点停在面板本身，别让第一个按钮带着焦点环出现在用户眼前
+  dlg.focus();
+}
+
+function renderSwitcher() {
+  const dlg = $('#switcher');
+  if (dlg && dlg.open) dlg.innerHTML = switcherHtml();
+}
+
+function ledgerMenuHtml(l) {
+  const cur = l.currency || '¥';
+  return `
+    <div class="sheet-card">
+      <p class="sheet-title">${esc(l.name)}</p>
+      <button type="button" class="sheet-btn" data-action="rename-ledger-open" data-id="${l.id}">改名</button>
+      <div class="sheet-row">
+        <span class="sheet-label">币种</span>
+        <div class="chip-row">
+          ${CURRENCIES
+            .map(
+              (c) =>
+                `<button type="button" class="chip chip-member ${c === cur ? 'is-on' : ''}" data-action="set-ledger-currency" data-id="${l.id}" data-currency="${c}">${c}</button>`,
+            )
+            .join('')}
+        </div>
+      </div>
+      <button type="button" class="sheet-btn sheet-danger" data-action="delete-ledger" data-id="${l.id}">删除这个账本</button>
+      <button type="button" class="sheet-cancel" data-action="close-ledger-menu">取消</button>
+    </div>`;
+}
+
+function openLedgerMenu(id) {
+  const l = findLedger(id);
+  if (!l) return;
+  menuLedgerId = l.id;
+  const dlg = $('#ledger-menu');
+  dlg.innerHTML = ledgerMenuHtml(l);
+  dlg.showModal();
+  dlg.focus();
+}
+
+function renderLedgerMenu() {
+  const dlg = $('#ledger-menu');
+  if (!dlg.open) return;
+  const l = findLedger(menuLedgerId);
+  if (!l) {
+    dlg.close();
+    return;
+  }
+  dlg.innerHTML = ledgerMenuHtml(l);
+}
+
+function openRenameModal(id) {
+  const l = findLedger(id) || store.activeLedger();
+  if (!l) return;
+  menuLedgerId = l.id;
+  const modal = $('#modal');
+  modal.innerHTML = `
+    <form class="card modal-card" data-form="rename-ledger">
+      <h2>账本改名</h2>
+      <input type="hidden" name="ledgerId" value="${l.id}" />
+      <label class="field"><span>账本名称</span><input type="text" name="name" value="${esc(l.name)}" required autofocus /></label>
+      <div class="modal-actions"><button type="button" class="btn" data-action="close-modal">取消</button><button type="submit" class="btn btn-primary">保存</button></div>
+    </form>`;
+  modal.showModal();
+}
+
+function focusAmountInput() {
+  document.querySelector('#view [data-form="entry"] [name="amount"]')?.focus();
+}
+
 /* ---------- 渲染 ---------- */
 
 function render() {
   renderLedgerList();
+  renderMobileTop();
   renderHeader();
   renderTabs();
   renderView();
+  renderSwitcher();
+  renderLedgerMenu();
   showSaveProblem(store.saveProblem);
 }
 
@@ -262,7 +452,10 @@ const TABS = [
 function renderTabs() {
   const bar = $('#tabs');
   bar.innerHTML = TABS.map(
-    ([key, label]) => `<button class="tab ${store.data.ui.tab === key ? 'is-active' : ''}" data-action="tab" data-tab="${key}">${label}</button>`,
+    ([key, label]) =>
+      `<button class="tab ${store.data.ui.tab === key ? 'is-active' : ''}" data-action="tab" data-tab="${key}"${
+        store.data.ui.tab === key ? ' aria-current="page"' : ''
+      }><span class="tab-icon">${TAB_ICONS[key]}</span>${label}</button>`,
   ).join('');
 }
 
@@ -270,12 +463,17 @@ function renderView() {
   const view = $('#view');
   const ledger = store.activeLedger();
   const tab = store.data.ui.tab;
+  const fab = $('#fab');
+  // 浮动「记一笔」只在流水页、且当前账本能记账（有成员）时出现；桌面端由 CSS 隐藏。
+  if (fab) fab.hidden = !(tab === 'flow' && ledger && ledger.memberIds.length > 0);
   if (tab === 'settings') {
     view.innerHTML = settingsView();
     return;
   }
   if (!ledger) {
-    view.innerHTML = '<div class="empty">先在左侧新建一个账本。</div>';
+    view.innerHTML = isMobile()
+      ? '<div class="empty">还没有账本。点上方账本名打开「选择账本」，新建一本开始记。</div>'
+      : '<div class="empty">先在左侧新建一个账本。</div>';
     return;
   }
   if (ledger.memberIds.length === 0 && tab !== 'members') {
@@ -319,6 +517,7 @@ function flowView(ledger) {
   const entries = [...ledger.entries].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.createdAt - a.createdAt));
   return `
     <form class="entry-form card" data-form="entry">
+      <div class="form-drawer-bar"><span>记一笔</span><button type="button" class="form-x" data-action="close-entry-form" aria-label="关闭">×</button></div>
       <input type="hidden" name="entryId" value="" />
       <label class="field"><span>日期</span><input type="date" name="date" required value="${today()}" /></label>
       <label class="field field-amount"><span>金额</span><input type="text" name="amount" inputmode="decimal" placeholder="0.00" required /></label>
@@ -465,6 +664,7 @@ function syncLedgerMembers() {
   if (count) count.textContent = `本账本成员（${ledger.memberIds.length} 人）`;
   renderHeader();
   renderLedgerList();
+  renderMobileTop();
 }
 
 /* ---------- 导入 / 合并 ---------- */
@@ -606,7 +806,7 @@ function settingsView() {
       <h2>当前账本</h2>
       <form class="inline-form" data-form="rename-ledger"><input type="text" name="name" value="${esc(store.activeLedger()?.name || '')}" placeholder="账本名称" /><button class="btn">改名</button></form>
       <div class="inline-form">
-        <select data-action="set-currency">${['¥', '$', '€', 'HK$', 'JP¥', '₩']
+        <select data-action="set-currency">${CURRENCIES
           .map((c) => `<option value="${c}" ${c === currency() ? 'selected' : ''}>${c}</option>`)
           .join('')}</select>
         <span class="hint">币种</span>
@@ -748,6 +948,9 @@ function onSubmit(form, formData) {
       data.ui.tab = 'flow';
     });
     $('#modal').close();
+    $('#switcher').close();
+    $('#ledger-menu').close();
+    document.body.classList.remove('form-open');
     render();
     return;
   }
@@ -763,7 +966,9 @@ function onSubmit(form, formData) {
 
   if (kind === 'rename-ledger') {
     const name = value('name');
-    if (name && ledger) store.mutate(() => (ledger.name = name));
+    const target = findLedger(value('ledgerId')) || store.activeLedger();
+    if (name && target) store.mutate(() => (target.name = name));
+    $('#modal').close();
     return render();
   }
 }
@@ -788,12 +993,49 @@ async function onClick(action, target) {
     case 'new-ledger':
       if (!store.me()) return openMeModal();
       return openLedgerModal();
-    case 'select-ledger':
-      store.mutate((data) => (data.ui.activeLedgerId = id));
-      memberQuery = '';
+    case 'open-switcher':
+      return openSwitcher();
+    case 'close-switcher':
+      return $('#switcher').close();
+    case 'ledger-menu':
+      return openLedgerMenu(id);
+    case 'close-ledger-menu':
+      return $('#ledger-menu').close();
+    case 'rename-ledger-open':
+      return openRenameModal(id);
+    case 'set-ledger-currency': {
+      const l = findLedger(id);
+      if (!l) return;
+      store.mutate(() => (l.currency = target.dataset.currency));
       return render();
+    }
+    case 'toggle-entry-form': {
+      if (store.data.ui.tab !== 'flow') {
+        store.mutate((data) => (data.ui.tab = 'flow'));
+        render();
+        document.body.classList.add('form-open');
+        requestAnimationFrame(focusAmountInput);
+        return;
+      }
+      const open = document.body.classList.toggle('form-open');
+      if (open) requestAnimationFrame(focusAmountInput);
+      return;
+    }
+    case 'close-entry-form':
+      return document.body.classList.remove('form-open');
+    case 'select-ledger': {
+      const picked = findLedger(id) || ledger;
+      if (!picked) return;
+      store.mutate((data) => (data.ui.activeLedgerId = picked.id));
+      memberQuery = '';
+      document.body.classList.remove('form-open');
+      $('#switcher').close();
+      $('#ledger-menu').close();
+      return render();
+    }
     case 'tab':
       store.mutate((data) => (data.ui.tab = target.dataset.tab));
+      document.body.classList.remove('form-open');
       return render();
     case 'edit-entry':
       return openEntryModal(id);
@@ -823,13 +1065,16 @@ async function onClick(action, target) {
       });
       return render();
     }
-    case 'delete-ledger':
-      if (!ledger || !confirm(`确认删除账本「${ledger.name}」以及其中 ${ledger.entries.length} 笔记录？`)) return;
+    case 'delete-ledger': {
+      const victim = findLedger(id) || ledger;
+      if (!victim || !confirm(`确认删除账本「${victim.name}」以及其中 ${victim.entries.length} 笔记录？`)) return;
       store.mutate((data) => {
-        data.ledgers = data.ledgers.filter((l) => l.id !== ledger.id);
+        data.ledgers = data.ledgers.filter((l) => l.id !== victim.id);
         data.ui.activeLedgerId = data.ledgers[0]?.id || null;
       });
+      if (menuLedgerId === victim.id) $('#ledger-menu').close();
       return render();
+    }
     case 'choose-path': {
       const result = await window.aaApi?.chooseDataFile?.();
       if (result && !result.canceled) return window.location.reload();
@@ -874,6 +1119,11 @@ document.addEventListener('click', (event) => {
     $('#modal').close();
     return;
   }
+  // 点面板空白处（内容没铺满时）也算关闭
+  if (event.target.id === 'switcher' || event.target.id === 'ledger-menu') {
+    event.target.close();
+    return;
+  }
   if (!event.target.closest('.picker')) closePickerMenus();
   const target = event.target.closest('[data-action],[data-pick],[data-create],[data-unpick]');
   if (target) onClick(target.dataset.action || '', target);
@@ -884,6 +1134,13 @@ document.addEventListener('input', (event) => {
   if (form) {
     form.querySelector('.field-error')?.remove();
     for (const el of form.querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
+  }
+  const switcherSearch = event.target.closest('[data-action="switcher-search"]');
+  if (switcherSearch) {
+    switcherQuery = switcherSearch.value;
+    const body = $('#switcher-body');
+    if (body) body.innerHTML = switcherCards();
+    return;
   }
   const search = event.target.closest('[data-action="member-search"]');
   if (!search) return;
