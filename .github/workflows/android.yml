@@ -23,8 +23,10 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: 补齐编译要用的安卓组件
-        run: yes | sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
+      - name: 装安卓 SDK 组件
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
 
       - name: 装依赖并把 src 同步进安卓工程
         run: |
