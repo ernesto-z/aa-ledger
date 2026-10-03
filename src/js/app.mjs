@@ -1,4 +1,18 @@
-import { store, uid, parseYuanToCents, today, DEFAULT_CATEGORIES, filterMembers, searchMembers, mergeData, looksLikeData, migrate } from './store.mjs';
+import {
+  store,
+  uid,
+  parseYuanToCents,
+  today,
+  DEFAULT_CATEGORIES,
+  filterMembers,
+  searchMembers,
+  mergeData,
+  looksLikeData,
+  migrate,
+  isNativeApp,
+  nativeDataLabel,
+  writeNativeExport,
+} from './store.mjs';
 import { settle, formatCents } from './calc.mjs';
 
 const $ = (sel) => document.querySelector(sel);
@@ -533,12 +547,22 @@ function undoMerge() {
   render();
 }
 
-function exportJson() {
-  const blob = new Blob([JSON.stringify(store.data, null, 2)], { type: 'application/json' });
+async function exportJson() {
+  const text = JSON.stringify(store.data, null, 2);
+  const name = `aa-ledger-${today()}.json`;
+  if (isNativeApp) {
+    try {
+      await writeNativeExport(name, text);
+    } catch (err) {
+      alert(`导出失败：${err?.message || err}`);
+    }
+    return;
+  }
+  const blob = new Blob([text], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `aa-ledger-${today()}.json`;
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -553,7 +577,9 @@ function settingsView() {
     ? locked
       ? `<p class="hint">测试用数据文件：<code>${esc(info.file)}</code>（由环境变量 AA_LEDGER_DATA 指定，这次启动只读写它，不会碰到你平时的账本）</p>`
       : `<p class="hint">当前存在：<code>${esc(info.file)}</code>${info.isDefault ? '（应用默认位置）' : '（你自己指定的位置）'}</p>`
-    : '<p class="hint">在桌面应用里可以自己指定存放位置；现在是在浏览器里跑，数据存在浏览器本地。</p>';
+    : isNativeApp
+      ? `<p class="hint">存在${esc(nativeDataLabel)}。这个位置不需要存储权限，卸载应用会一起删掉，所以每隔一阵请用下面的「导出一份 JSON」存一份到微信文件或其它地方。</p>`
+      : '<p class="hint">在桌面应用里可以自己指定存放位置；现在是在浏览器里跑，数据存在浏览器本地。</p>';
   return `
     <div class="card">
       <h2>「我」是谁</h2>
@@ -833,9 +859,13 @@ async function onClick(action, target) {
 
 async function refreshDataInfo() {
   dataInfo = window.aaApi?.dataInfo ? await window.aaApi.dataInfo() : null;
-  $('#data-path').textContent = dataInfo ? `数据文件：${dataInfo.file}` : '浏览器预览模式';
-  if (dataInfo?.lockedByEnv) $('#data-path').textContent += '（测试用数据文件）';
-  else if (dataInfo && !dataInfo.isDefault) $('#data-path').textContent += '（自定义位置）';
+  if (dataInfo) {
+    $('#data-path').textContent = `数据文件：${dataInfo.file}`;
+    if (dataInfo.lockedByEnv) $('#data-path').textContent += '（测试用数据文件）';
+    else if (!dataInfo.isDefault) $('#data-path').textContent += '（自定义位置）';
+  } else {
+    $('#data-path').textContent = isNativeApp ? '数据文件：手机应用目录里的 aa-ledger-data.json' : '浏览器预览模式';
+  }
   return dataInfo;
 }
 

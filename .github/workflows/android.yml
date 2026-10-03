@@ -1,0 +1,44 @@
+name: 安卓 debug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  apk:
+    name: 打 debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: 补齐编译要用的安卓组件
+        run: yes | sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
+
+      - name: 装依赖并把 src 同步进安卓工程
+        run: |
+          npm ci
+          npx cap sync android
+
+      - name: 打 debug 包（不需要签名配置）
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aa-ledger-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

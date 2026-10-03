@@ -1,0 +1,14 @@
+{
+  "appId": "com.local.aaledger",
+  "appName": "AA 账本",
+  "webDir": "src",
+  "backgroundColor": "#f5f6f8",
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "CapacitorCookies": {
+      "enabled": false
+    }
+  }
+}

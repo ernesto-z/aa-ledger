@@ -92,10 +92,29 @@ npm test                      # 29 个单元测试：结算算法、数据迁移
 界面已经做了窄屏适配（≤720px：账本变顶部横滑、结算表一人一块、输入框 16px 不触发放大），
 桌面端最小宽度 900px，所以手机排版不可能影响电脑。
 
-在手机上装个能打开本地 HTML 的浏览器，把 `src/` 整个文件夹拷进去打开即可，数据存在浏览器 localStorage 里，
-记完「导出一份 JSON」拷回电脑合并。（部分浏览器出于安全限制不让直接打开 `file://` 页面，真遇到就只能走 APK 那条路。）
+在手机上装个能打开本地 HTML 的浏览器，把 `src/` 整个文件夹拷进去打开也能用，数据存在浏览器 localStorage 里，
+记完「导出一份 JSON」拷回电脑合并。（部分浏览器出于安全限制不让直接打开 `file://` 页面，真遇到就走下面 APK 这条路。）
 
-要变成真正的 APK（Capacitor + Android 工具链，本机要多装 1.5～2GB）还没做，需要的话再说。
+## 装成手机 App（APK）
+
+工程里有 `android/` 目录和 `.github/workflows/android.yml`：**本机不需要装 JDK、Android SDK 或 Android Studio**，
+构建在 GitHub 的安卓环境里跑。
+
+1. 打开仓库的 Actions 页 → 左边选「安卓 debug APK」→ 右侧「Run workflow」→ Run workflow。
+   （往 main 推代码也会自动跑一次。）
+2. 跑完在 Summary 页面下载 `aa-ledger-debug` 里的 `app-debug.apk`（几 MB），传到手机安装。
+   小米澎湃OS 会提示「未知来源应用」，设置里允许这一次安装即可。
+3. debug 包没有签名配置，只能自己装着用，不能上架，也不要在同一台手机上装第二个不同签名的版本。
+
+手机版的数据存在应用自己的目录里（`Android/data/com.local.aaledger/files/aa-ledger-data.json`），
+不需要存储权限，卸载应用会连它一起删掉，所以记一阵就「导出一份 JSON」发到微信或拷到电脑存着。
+和电脑之间倒数据仍然走上一节那套「导出 → 选择 JSON 文件 → 看试算报告 → 合并」。
+
+改完 `src/` 里的代码要重新同步一次再提交，CI 才能拿到新界面（本地跑，不用安卓工具链）：
+
+```bash
+npx cap sync android
+```
 
 ## 目录
 
@@ -104,9 +123,12 @@ electron/   主进程与预加载脚本（窗口、菜单、数据读写）
   data-store.cjs 数据文件读写：滚动备份、损坏另存、外部改写时不覆盖
 src/        渲染层：index.html + styles.css + js/
   js/calc.mjs    结算算法（纯函数，金额单位为「分」）
-  js/store.mjs   数据模型、迁移与持久化
+  js/store.mjs   数据模型、迁移与持久化（桌面 / 安卓 / 浏览器三条路径）
   js/app.mjs     界面渲染与交互
-test/       算法与数据模型的单元测试
+android/    Capacitor 生成的安卓工程（CI 里 gradle assembleDebug）
+capacitor.config.json  网页目录与包名
+.github/workflows/     出 debug APK 的构建流程
+test/       算法、数据模型与安卓存储的单元测试
 scripts/    打包脚本与测试启动脚本（不进包）
 ```
 

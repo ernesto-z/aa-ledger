@@ -15,5 +15,12 @@
   "devDependencies": {
     "@electron/packager": "^20.3.0",
     "electron": "^33.2.0"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.2",
+    "@capacitor/cli": "^6.2.2",
+    "@capacitor/core": "^6.2.2",
+    "@capacitor/filesystem": "^6.0.4",
+    "@capacitor/share": "^6.0.4"
   }
 }

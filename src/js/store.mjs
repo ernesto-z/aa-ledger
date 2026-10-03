@@ -1,6 +1,77 @@
 const LS_KEY = 'aa-ledger-data-v1';
 const bridge = typeof window !== 'undefined' ? window.aaApi : undefined;
 
+/* 安卓壳（Capacitor）里既没有 window.aaApi，也不该只靠 localStorage。
+   项目没有打包器，所以不走插件的 JS 包装，直接用注入好的桥调用原生插件。 */
+const cap = typeof window !== 'undefined' ? window.Capacitor : undefined;
+const native = cap && typeof cap.nativePromise === 'function' && cap.isNativePlatform?.() ? cap : null;
+
+const NATIVE_FILE = 'aa-ledger-data.json';
+/* EXTERNAL 是应用自己的目录（/Android/data/<包名>/files），不需要任何存储权限；
+   DOCUMENTS 在安卓上指公共 Documents，Android 11 之后写不进去还会弹权限框。 */
+const NATIVE_DIR = 'EXTERNAL';
+
+const callNative = (plugin, method, options) => native.nativePromise(plugin, method, options);
+
+const CONFLICT_MESSAGE =
+  '刚才的保存被拦下了：磁盘上的账本在你打开之后又被别处改过，本次改动已另存为副本，没有覆盖它。菜单「数据 → 从备份恢复…」可以找回任意一份。';
+
+const hasLocalStorage = typeof localStorage !== 'undefined';
+
+function readLocal() {
+  if (!hasLocalStorage) return null;
+  try {
+    return JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function writeLocal(snapshot) {
+  if (!hasLocalStorage) return;
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(snapshot));
+  } catch {
+    //  WebView 的配额或隐私模式写不进去，原生文件才是账本的正身
+  }
+}
+
+async function nativeLoad() {
+  try {
+    const result = await callNative('Filesystem', 'readFile', { path: NATIVE_FILE, directory: NATIVE_DIR, encoding: 'utf8' });
+    return JSON.parse(result.data);
+  } catch {
+    return null; // 第一次运行还没有这个文件
+  }
+}
+
+async function nativeSave(snapshot) {
+  try {
+    await callNative('Filesystem', 'writeFile', {
+      path: NATIVE_FILE,
+      directory: NATIVE_DIR,
+      data: JSON.stringify(snapshot, null, 2),
+      recursive: true,
+    });
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/* 导出用的两份能力：写一份 JSON 到应用目录的 exports/，再调系统分享面板。 */
+export const isNativeApp = Boolean(native);
+
+export const nativeDataLabel = native ? `应用目录里的 ${NATIVE_FILE}` : null;
+
+export async function writeNativeExport(filename, text) {
+  const path = `exports/${filename}`;
+  await callNative('Filesystem', 'writeFile', { path, directory: NATIVE_DIR, data: text, recursive: true });
+  const uri = await callNative('Filesystem', 'getUri', { path, directory: NATIVE_DIR });
+  await callNative('Share', 'share', { title: '账本备份', url: uri.uri, dialogTitle: '把这份 JSON 传到电脑' });
+  return path;
+}
+
 export const DEFAULT_CATEGORIES = ['餐饮', '交通', '住宿', '门票', '日用', '其他'];
 
 export function blank() {
@@ -151,7 +222,17 @@ export const store = {
   onSaveProblem: null,
 
   async init() {
-    const saved = bridge ? await bridge.loadData() : JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+    let saved;
+    if (bridge) {
+      saved = await bridge.loadData();
+    } else if (native) {
+      // 安卓上以 Documents 里那份 JSON 为准；localStorage 只是缓存副本，
+      // 万一原生文件还没写过（比如早期版本只存过浏览器），把它一次性搬过去。
+      saved = await nativeLoad();
+      if (!saved) saved = readLocal();
+    } else {
+      saved = readLocal();
+    }
     this.data = migrate(saved);
     if (this.data.ledgers.length && !this.data.ledgers.some((l) => l.id === this.data.ui.activeLedgerId)) {
       this.data.ui.activeLedgerId = this.data.ledgers[0].id;
@@ -162,23 +243,26 @@ export const store = {
   persist() {
     const snapshot = JSON.parse(JSON.stringify(this.data));
     if (bridge) {
-      const before = this.saveProblem;
-      Promise.resolve(bridge.saveData(snapshot))
-        .then((result) => {
-          this.saveProblem =
-            result && result.ok === false
-              ? '刚才的保存被拦下了：磁盘上的账本在你打开之后又被别处改过，本次改动已另存为副本，没有覆盖它。菜单「数据 → 从备份恢复…」可以找回任意一份。'
-              : null;
-        })
-        .catch(() => {
-          this.saveProblem = '保存失败：写入数据文件时出错。请检查磁盘空间或文件权限。';
-        })
-        .finally(() => {
-          if (this.saveProblem !== before && typeof this.onSaveProblem === 'function') this.onSaveProblem(this.saveProblem);
-        });
-    } else {
-      localStorage.setItem(LS_KEY, JSON.stringify(snapshot));
+      this.saveThrough(() => bridge.saveData(snapshot), CONFLICT_MESSAGE);
+      return;
     }
+    writeLocal(snapshot);
+    if (native) this.saveThrough(() => nativeSave(snapshot), '保存失败：写入手机里的账本文件时出错，请确认应用有存储权限。');
+  },
+
+  // 三条路径（桌面 / 安卓 / 浏览器）都先把快照留在内存，失败只报警告，不回滚界面。
+  saveThrough(call, failMessage) {
+    const before = this.saveProblem;
+    Promise.resolve(call())
+      .then((result) => {
+        this.saveProblem = result && result.ok === false ? failMessage : null;
+      })
+      .catch(() => {
+        this.saveProblem = failMessage;
+      })
+      .finally(() => {
+        if (this.saveProblem !== before && typeof this.onSaveProblem === 'function') this.onSaveProblem(this.saveProblem);
+      });
   },
 
   mutate(fn) {
